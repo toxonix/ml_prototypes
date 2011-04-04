@@ -69,8 +69,13 @@ void adjustTabIndex(){
 }
 
 void draw(){
-  background(0);
+  //sleep draw loop if focus lost
+  if(!focused) { 
+    delay(100); 
+    return;
+  }
 
+  background(0);
   //origin lines
   stroke(1,0,0);
   line(0,0,0, 100,0,0);
@@ -82,7 +87,7 @@ void draw(){
   text(labels[weightIndex], 10, 10); 
   if(!keyEvents.isEmpty()){ 
     KeyEvent e = (KeyEvent)keyEvents.poll(); 
-    if(keyEvents.size() > 0) { keyEvents.clear(); } 
+    if(keyEvents.size() > 5) { keyEvents.clear(); } 
     if(key == 'e') { xOffset += 5;} 
     if(key == 'q') { xOffset -= 5;} 
     if(key == 'n') { 
@@ -111,11 +116,13 @@ void draw(){
     }
   }
 
+  Cube centroid = null;
   if(clusterer.getClusters().size() > 0){
     Cluster cluster = (Cluster)clusterer.getClusters().get(tabIndex);
+    centroid = centroid(cluster); //get center of selected cluster
+    
     for(int i=0;i<cluster.cubes.size();i++){
       Cube c = (Cube)cluster.cubes.get(i);
-      //rounding don't care here, just looking for a color range
       float colorNormal = norm(((Double)(c.weights[weightIndex])).floatValue(), 0, 5);
       fill(colorNormal, 0.5, 1-colorNormal, 1);
       text(c.toString(), 10, (i+2)*10);
@@ -140,8 +147,13 @@ void draw(){
         c.cluster!=null && c.cluster.equals(clusterer.getClusters().get(tabIndex))){
       boxSize = 3;
       alpha = 1;
-      //aim at the current cluster (not centered)
-      camera.aim(xPos,yPos,zPos);
+      if(centroid !=null && c.equals(centroid)){
+        //aim at the center of the cluster
+        camera.aim(xPos,yPos,zPos);
+        boxSize=10;
+        alpha=0.5;
+        colorNormal = 1;
+      }
     }
     fill(colorNormal, 0.1, 1-colorNormal, alpha);
     translate(xPos, yPos, zPos);
@@ -153,6 +165,7 @@ void draw(){
     line(xPos,yPos,zPos, xPos,yPos,0);
   }
   camera.feed();
+  
 }
 
 java.util.LinkedList keyEvents = new java.util.LinkedList();
@@ -161,9 +174,7 @@ class KeyEvent {
   KeyEvent(char key){
     this.key = key;
   }
-}
-
-void keyPressed(){
+} void keyPressed(){
   keyEvents.add(new KeyEvent(key));
 }
 
@@ -185,6 +196,57 @@ double[] getWeights(String[] line){
     }
   }
   return weights;
+}
+
+ //finds the cube closest to the center of a cluster
+ //by the simplest method C = X1+...+Xk / k
+Cube centroid(Cluster cluster){
+  Cube center = (Cube) cluster.cubes.get(0);
+  if(cluster.cubes.size()  > 1){
+    PVector centerVector = approximateCenter(cluster.cubes);
+   
+   //println("cluster "+cluster+" approx center: "+centerX+", "+centerY);
+    float minDistance = MAX_FLOAT; 
+    for(int i=0;i<cluster.cubes.size();i++){
+      Cube c =  (Cube)cluster.cubes.get(i); 
+      float distance = distance(c.latitude, c.longitude, centerVector.x, centerVector.y);
+      if(distance < minDistance) {
+        center = c;
+      }
+    }
+  }
+  //println("Cube nearest centroid: "+center);
+  return center;
+}
+
+PVector approximateCenter(ArrayList cubes){
+    float sumX =0, sumY=0;
+    for(int i=0;i<cubes.size();i++){
+      Cube c =  (Cube)cubes.get(i); 
+      sumX+=c.latitude;
+      sumY+=c.longitude;
+    }
+    float centerX = sumX / cubes.size();
+    float centerY = sumY / cubes.size();
+    return new PVector(centerX, centerY, 0);
+}
+
+//calculates Euler distance
+float distance(float x1, float y1, float x2, float y2){
+  return sqrt(pow(x1 - x2,2) + pow(y1 - y2,2));
+}
+
+//finds the distance between two clusters
+float distanceBetweenRandom(Cluster c1, Cluster c2){
+  Cube center1 = (Cube)c1.cubes.get(0);
+  Cube center2 = (Cube)c2.cubes.get(0);
+  return distance(center1.latitude, center1.longitude, center2.latitude, center2.longitude);
+}
+
+float distanceBetweenCenters(Cluster c1, Cluster c2){
+  Cube centroid1 = centroid(c1);
+  Cube centroid2 = centroid(c2);
+  return distance(centroid1.latitude, centroid1.longitude, centroid2.latitude, centroid2.longitude);
 }
 
 static String [] labels = new String[]{
@@ -259,7 +321,6 @@ class FuzzyCMeans implements ClusteringAlgorithm{
   void init(ArrayList cubes){
     //pick a few cubes to make initial centroids
     for(int i=0;i<initialCentroids;i++){
-
       //centroids.add(c);
     }
   }
@@ -284,7 +345,7 @@ class SingleLinkageHierarchical implements ClusteringAlgorithm{
 
   //a larger max distance finds large clusters
   //smaller distane finds many more compact clusters
-  float maxDistance = 0.05; 
+  float maxDistance = 0.01; 
 
   SingleLinkageHierarchical (float maxDistance){
     this.maxDistance = maxDistance;
@@ -326,7 +387,7 @@ class SingleLinkageHierarchical implements ClusteringAlgorithm{
       for(int j=0;j<clusters.size();j++){
         Cluster c2 = (Cluster)clusters.get(j);
         if(c2.equals(c1)) { continue; } //skip this one, distance is zero
-        float distance = distance(c1,c2);
+        float distance = distanceBetweenRandom(c1,c2);
         //brutus finds the nearest cluster
         if(distance < maxDistance) {
           if(distance < leastDistance){
@@ -340,7 +401,7 @@ class SingleLinkageHierarchical implements ClusteringAlgorithm{
         clusters.remove(nearest);
         c1.merge(nearest);
         stability = 0;
-        println("merged into: "+clusters.size());
+        println("merged "+nearest+" into "+c1);
       }
       int currentSize = clusters.size();
 
@@ -362,12 +423,6 @@ class SingleLinkageHierarchical implements ClusteringAlgorithm{
     println("found "+clusters.size()+" stable clusters");
   }
 
-  //calculates Euler distance
-  float distance(Cluster c1, Cluster c2){
-    Cube center1 = (Cube)c1.cubes.get(0);
-    Cube center2 = (Cube)c2.cubes.get(0);
-    return sqrt(pow(center1.latitude - center2.latitude,2) + pow(center1.longitude - center2.longitude,2));
-  }
 }
 
 
